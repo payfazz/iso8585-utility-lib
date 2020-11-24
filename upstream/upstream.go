@@ -153,18 +153,20 @@ func (u *Upstream) main() {
 
 		// flush notification when holding r-lock to submission data,
 		// to avoid duplicate notification on new writer
-	flushLoop:
-		for {
-			select {
-			case <-u.submission.notify:
-			case s := <-u.submission.priorityNotify:
-				prioritized[s] = struct{}{}
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				break flushLoop
+		// NOTE: need to wrap in function call, so RUnlock() after it always called
+		func() {
+			for {
+				select {
+				case <-u.submission.notify:
+				case s := <-u.submission.priorityNotify:
+					prioritized[s] = struct{}{}
+				case <-ctx.Done():
+					return
+				default:
+					return
+				}
 			}
-		}
+		}()
 
 		// unlock submission data,
 		// snapshoted submission is now clear from pending notification
