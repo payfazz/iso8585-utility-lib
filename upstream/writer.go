@@ -25,11 +25,10 @@ func (u *Upstream) writer(ctx context.Context, conn net.Conn) error {
 
 		if s.sendOnly {
 			markSubmissionComplete := func() {
+				s.setOk(nil, nil)
 				u.submission.data.lock.Lock()
 				delete(u.submission.data.data, s.id)
 				u.submission.data.lock.Unlock()
-
-				s.setOk(nil, nil)
 			}
 			go markSubmissionComplete()
 		}

@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/payfazz/iso8585-utility-lib/upstream/spec"
-
 	"github.com/payfazz/mainutil/maintls"
 )
 
@@ -62,13 +60,24 @@ func (b Builder) Build() (*Upstream, error) {
 		return nil, fmt.Errorf("invalid spec")
 	}
 	if u.proxy.endpoint != nil {
-		if u.proxy.endpoint.Scheme == "https" {
+		u.proxy.endpoint.Scheme = strings.ToLower(u.proxy.endpoint.Scheme)
+		switch u.proxy.endpoint.Scheme {
+		case "https":
 			tlsConfig := maintls.TLSConfig()
 			tlsConfig.ServerName = u.proxy.endpoint.Hostname()
 			if u.proxy.caSum != "" {
 				maintls.SetStaticPeerVerification(tlsConfig, true, u.proxy.caSum)
 			}
 			u.proxy.tlsConfig = tlsConfig
+			if u.proxy.endpoint.Port() == "" {
+				u.proxy.endpoint.Host = u.proxy.endpoint.Hostname() + ":443"
+			}
+		case "http":
+			if u.proxy.endpoint.Port() == "" {
+				u.proxy.endpoint.Host = u.proxy.endpoint.Hostname() + ":80"
+			}
+		default:
+			return nil, fmt.Errorf("invalid proxy scheme: %s", u.proxy.endpoint.Scheme)
 		}
 	}
 
@@ -90,7 +99,7 @@ func (b Builder) Build() (*Upstream, error) {
 // Close .
 func (u *Upstream) Close() error {
 	if u.isClosed() {
-		return ErrServerClosed
+		return nil
 	}
 
 	u.cancelLifetimeCtx()
@@ -100,13 +109,11 @@ func (u *Upstream) Close() error {
 }
 
 func (u *Upstream) main() {
-	ctx := u.lifetimeCtx
-
 	processUpstreamConnection := func() error {
 		var wait sync.WaitGroup
 		defer wait.Wait()
 
-		ctx, cancelCtx := context.WithCancel(ctx)
+		ctx, cancelCtx := context.WithCancel(u.lifetimeCtx)
 		defer cancelCtx()
 
 		conn, unprocessed, err := u.dial(ctx)
@@ -123,11 +130,11 @@ func (u *Upstream) main() {
 
 		atomic.StoreInt64(&u.lastActive, time.Now().Unix())
 
-		readWriteErrorCh := make(chan error, 1)
-		passReadWriteError := func(err error) {
+		errCh := make(chan error, 1)
+		passErr := func(err error) {
 			if err != nil {
 				select {
-				case readWriteErrorCh <- err:
+				case errCh <- err:
 				default:
 				}
 			}
@@ -188,25 +195,25 @@ func (u *Upstream) main() {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			passReadWriteError(u.reader(ctx, conn, unprocessed))
+			passErr(u.reader(ctx, conn, unprocessed))
 		}()
 
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			passReadWriteError(u.writer(ctx, conn))
+			passErr(u.writer(ctx, conn))
 		}()
 
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			passReadWriteError(u.pinger(ctx))
+			passErr(u.pinger(ctx))
 		}()
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case err := <-readWriteErrorCh:
+		case err := <-errCh:
 			return err
 		}
 	}
@@ -224,7 +231,7 @@ func (u *Upstream) main() {
 			}
 			u.logErr("connection error (reconnect in 0.5s): %s", err.Error())
 			select {
-			case <-ctx.Done():
+			case <-u.lifetimeCtx.Done():
 				return
 			case <-time.After(500 * time.Millisecond):
 			}
@@ -239,15 +246,6 @@ func (u *Upstream) dial(ctx context.Context) (net.Conn, []byte, error) {
 	dialTarget := u.target
 	if u.proxy.endpoint != nil {
 		dialTarget = u.proxy.endpoint.Host
-		_, port, _ := net.SplitHostPort(dialTarget)
-		if port == "" {
-			switch u.proxy.endpoint.Scheme {
-			case "https":
-				dialTarget = dialTarget + ":443"
-			default:
-				dialTarget = dialTarget + ":80"
-			}
-		}
 	}
 	conn, err := netDialer.DialContext(dialCtx, "tcp", dialTarget)
 	if err != nil {
@@ -272,12 +270,14 @@ func (u *Upstream) dial(ctx context.Context) (net.Conn, []byte, error) {
 		user := u.proxy.endpoint.User.Username()
 		pass, _ := u.proxy.endpoint.User.Password()
 		if user != "" || pass != "" {
-			req.Header["Proxy-Authorization"] = []string{"Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))}
+			req.Header["Proxy-Authorization"] = []string{
+				"Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass)),
+			}
 		}
 
 		// background goroutine to force close connection,
 		// because req.write and http.ReadResponse doesn't have timeout functionality
-		// state:
+		// dialState:
 		// 0 => not done, waiting
 		// 1 => done
 		// 2 => not done, timed up, will be closed
@@ -291,7 +291,7 @@ func (u *Upstream) dial(ctx context.Context) (net.Conn, []byte, error) {
 
 		if err := req.Write(conn); err != nil {
 			conn.Close()
-			if dialCtx.Err() == context.DeadlineExceeded {
+			if dialCtx.Err() != nil {
 				err = fmt.Errorf("timeout")
 			}
 			return nil, nil, fmt.Errorf("failed to write http proxy CONNECT request: %s", err.Error())
@@ -301,27 +301,24 @@ func (u *Upstream) dial(ctx context.Context) (net.Conn, []byte, error) {
 		resp, err := http.ReadResponse(buff, req)
 		if err != nil {
 			conn.Close()
-			if dialCtx.Err() == context.DeadlineExceeded {
+			if dialCtx.Err() != nil {
 				err = fmt.Errorf("timeout")
 			}
 			return nil, nil, fmt.Errorf("failed to read http proxy CONNECT request: %s", err.Error())
 		}
 
 		if resp.StatusCode != 200 {
-			respBodyRaw := make([]byte, 20<<10) // 20 KiB
-			n, _ := io.ReadFull(resp.Body, respBodyRaw)
 			conn.Close()
 
-			respBody := string(respBodyRaw[:n])
-
-			if strings.Contains(strings.ToLower(respBody), "connection refused") {
-				return nil, nil, fmt.Errorf("http proxy returning %d: connection refused", resp.StatusCode)
+			if squidError := resp.Header.Get("X-Squid-Error"); squidError != "" {
+				return nil, nil, fmt.Errorf("http proxy returning %d: %v", resp.StatusCode, squidError)
 			}
+
 			return nil, nil, fmt.Errorf("http proxy returning %d", resp.StatusCode)
 		}
 
 		if !atomic.CompareAndSwapInt32(&dialState, 0, 1) {
-			return nil, nil, context.DeadlineExceeded
+			return nil, nil, fmt.Errorf("http proxy CONNECT failed: timeout")
 		}
 
 		if buff.Buffered() > 0 {
@@ -358,10 +355,10 @@ func (u *Upstream) Process(ctx context.Context, msg spec.Msg) (res spec.Msg, err
 	}
 
 	removeSubmission := func(err error) {
+		s.setErr(err)
 		u.submission.data.lock.Lock()
 		delete(u.submission.data.data, s.id)
 		u.submission.data.lock.Unlock()
-		s.setErr(err)
 	}
 
 	select {

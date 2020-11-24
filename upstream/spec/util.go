@@ -23,7 +23,7 @@ func ReadOneMessage(s Spec, r io.Reader, bufferIn []byte, bufferLenIn int) (msgO
 
 	for {
 		for needMore > 0 || bufferLen == 0 {
-			if len(buffer[bufferLen:]) <= needMore {
+			if len(buffer[bufferLen:]) <= 256 {
 				newBuffer := make([]byte, max(cap(buffer)*2, 256))
 				copy(newBuffer, buffer)
 				buffer = newBuffer
@@ -46,7 +46,7 @@ func ReadOneMessage(s Spec, r io.Reader, bufferIn []byte, bufferLenIn int) (msgO
 			continue
 		}
 		if msg == nil || advance == 0 {
-			panic("spec error: invalid MsgDecode: ((msg == nil || advance == 0) && needMore <= 0 && err == nil)")
+			panic("spec error: MsgDecode: ((msg == nil || advance == 0) && needMore <= 0 && err == nil)")
 		}
 
 		msgRaw := make([]byte, advance)

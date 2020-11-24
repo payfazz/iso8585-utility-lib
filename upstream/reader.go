@@ -33,10 +33,8 @@ func (u *Upstream) reader(ctx context.Context, conn net.Conn, unprocessedRead []
 }
 
 func (u *Upstream) processRecvMsg(msg spec.Msg, msgRaw []byte) {
-	ctx := u.lifetimeCtx
-
 	if autoResp := u.spec.AutoResp(msg); autoResp != nil {
-		u.sendAutoResp(ctx, autoResp)
+		u.sendAutoResp(autoResp)
 		return
 	}
 
@@ -52,10 +50,10 @@ func (u *Upstream) processRecvMsg(msg spec.Msg, msgRaw []byte) {
 	}
 }
 
-func (u *Upstream) sendAutoResp(ctx context.Context, msg spec.Msg) {
+func (u *Upstream) sendAutoResp(msg spec.Msg) {
 	msgRaw, err := u.spec.MsgEncode(msg)
 	if err != nil {
-		panic("spec error: " + err.Error())
+		panic("spec error: MsgEncode:" + err.Error())
 	}
 
 	s := newSubmission(u.spec.MsgID(msg), msg, msgRaw, true)
@@ -65,15 +63,15 @@ func (u *Upstream) sendAutoResp(ctx context.Context, msg spec.Msg) {
 	u.submission.data.lock.Unlock()
 
 	removeSubmission := func(err error) {
+		s.setErr(err)
 		u.submission.data.lock.Lock()
 		delete(u.submission.data.data, s.id)
 		u.submission.data.lock.Unlock()
-		s.setErr(err)
 	}
 
 	select {
-	case <-ctx.Done():
-		removeSubmission(ctx.Err())
+	case <-u.lifetimeCtx.Done():
+		removeSubmission(u.lifetimeCtx.Err())
 		return
 	case u.submission.priorityNotify <- s:
 	}

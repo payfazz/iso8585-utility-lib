@@ -4,13 +4,11 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/payfazz/iso8585-utility-lib/upstream/spec"
 )
 
 var netDialer = &net.Dialer{}
-var defTime = time.Time{}
 
 type submission struct {
 	id string
@@ -86,7 +84,7 @@ func (u *Upstream) isClosed() bool {
 	return u.lifetimeCtx.Err() != nil
 }
 
-// simple net.Conn wrapper, that can only be closed once
+// simple net.Conn wrapper, that can only be closed multiple times
 type connCloserHelper struct {
 	net.Conn
 	closer sync.Once

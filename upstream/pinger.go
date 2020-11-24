@@ -22,7 +22,7 @@ func (u *Upstream) pinger(ctx context.Context) error {
 
 		msgRaw, err := u.spec.MsgEncode(msg)
 		if err != nil {
-			panic("spec error: " + err.Error())
+			panic("spec error: MsgEncode:" + err.Error())
 		}
 
 		s := newSubmission(u.spec.MsgID(msg), msg, msgRaw, true)
@@ -32,10 +32,10 @@ func (u *Upstream) pinger(ctx context.Context) error {
 		u.submission.data.lock.Unlock()
 
 		removeSubmission := func(err error) {
+			s.setErr(err)
 			u.submission.data.lock.Lock()
 			delete(u.submission.data.data, s.id)
 			u.submission.data.lock.Unlock()
-			s.setErr(err)
 		}
 
 		select {
