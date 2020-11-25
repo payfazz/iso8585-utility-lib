@@ -334,7 +334,7 @@ func (u *Upstream) dial(ctx context.Context) (net.Conn, []byte, error) {
 	unprocessedRead, err = u.spec.OnNewConn(onNewConnCtx, conn, unprocessedRead)
 	if err != nil {
 		conn.Close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("OnNewConn failed: %s", err.Error())
 	}
 
 	return conn, unprocessedRead, nil
