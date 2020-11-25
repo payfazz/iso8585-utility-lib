@@ -334,6 +334,9 @@ func (u *Upstream) dial(ctx context.Context) (net.Conn, []byte, error) {
 	unprocessedRead, err = u.spec.OnNewConn(onNewConnCtx, conn, unprocessedRead)
 	if err != nil {
 		conn.Close()
+		if err == context.DeadlineExceeded {
+			err = fmt.Errorf("timeout")
+		}
 		return nil, nil, fmt.Errorf("OnNewConn failed: %s", err.Error())
 	}
 
