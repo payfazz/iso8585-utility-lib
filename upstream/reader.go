@@ -25,6 +25,8 @@ func (u *Upstream) reader(ctx context.Context, conn net.Conn, unprocessedRead []
 
 		atomic.StoreInt64(&u.lastActive, time.Now().Unix())
 
+		msg := msg
+		msgRaw := msgRaw
 		go func() {
 			u.logInfo("R: %s", msg.String())
 			u.processRecvMsg(msg, msgRaw)
@@ -53,7 +55,7 @@ func (u *Upstream) processRecvMsg(msg spec.Msg, msgRaw []byte) {
 func (u *Upstream) sendAutoResp(msg spec.Msg) {
 	msgRaw, err := u.spec.MsgEncode(msg)
 	if err != nil {
-		panic("spec error: MsgEncode:" + err.Error())
+		panic("spec error: MsgEncode auto resp:" + err.Error())
 	}
 
 	s := newSubmission(u.spec.MsgID(msg), msg, msgRaw, true)
